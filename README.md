@@ -156,3 +156,34 @@ buffer means a single `read()` likely captures several lines at once, which
 then simply get parceled out one at a time across subsequent calls via
 `clean_reserve`'s leftover state. The algorithm's correctness never depends
 on how the data happens to be chunked — only `reserve`'s content does.
+
+### Deep Dive: Memory Trace & Execution Flow
+
+To fully understand how `get_next_line` handles arbitrary buffer sizes without losing data, we have to trace the exact state of the `static char *reserve` through a forced edge case. 
+
+**Scenario:** 
+File content: `"AB\nC"` | `BUFFER_SIZE` = `2` 
+
+*   **Call 1:**
+    *   `read_to_reserve` fetches two chunks: `"AB"` then `"\nC"`. 
+    *   `reserve` joins them into `"AB\nC"`.
+    *   `extract_line` isolates the line and returns `"AB\n"` to the user.
+    *   `clean_reserve` preserves the leftover character. The static `reserve` now holds `"C"`.
+*   **Call 2:**
+    *   The function enters with `"C"` already in the static `reserve`.
+    *   `read()` hits the End of File (EOF) and returns 0 bytes.
+    *   `extract_line` returns the final string `"C"`.
+    *   `clean_reserve` detects no `\n`, frees the memory, and resets `reserve` to `NULL`.
+*   **Call 3:**
+    *   `reserve` enters as `NULL`. `read()` confirms EOF. The function returns `NULL`.
+
+### Memory Mathematics: The 1-Byte Safety Net
+
+In `clean_reserve`, allocating the exact memory needed to store the leftover string after a newline is critical to preventing memory leaks and segmentation faults.
+
+The allocation formula used is:
+`malloc(sizeof(char) * (ft_strlen(reserve) - i + 1))`
+
+Because `ft_strlen` counts length (1-based) and `i` represents the array index (0-based) of the `\n`, subtracting `i` from the total length yields exactly one byte *more* than strictly necessary for the remaining characters. 
+
+Instead of writing bulky `if/else` index conversion blocks, this formula acts as a deliberate, highly efficient 1-byte safety net. Over-allocating by a single byte ensures absolute structural safety against buffer overflows under every possible edge case with virtually zero performance cost.
